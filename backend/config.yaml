@@ -1,0 +1,12 @@
+llm:
+  ollama-deepseek:
+    provider: "ollama"
+    model_name: "deepseek-r1"
+
+  ollama-llama3:
+    provider: "ollama"
+    model_name: "llama3.2:latest"
+
+  ollama-mistral:
+    provider: "ollama"
+    model_name: "mistral"

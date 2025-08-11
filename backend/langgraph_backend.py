@@ -7,7 +7,6 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.message import add_messages
 from dotenv import load_dotenv
 import sqlite3
-import graphviz
 
 GRAPH_IMAGE_PATH = "chatbot_architecture.png"
 
@@ -33,13 +32,6 @@ graph.add_node("chat_node", chat_node)
 graph.add_edge(START, "chat_node")
 graph.add_edge("chat_node", END)
 
-# Save graph image here
-try:
-    dot_source = graph.to_dot()  # Check if this method exists in your LangGraph version
-    dot = graphviz.Source(dot_source)
-    dot.render(filename=GRAPH_IMAGE_PATH.replace(".png", ""), format="png", cleanup=True)
-except Exception as e:
-    print("Failed to generate graph image:", e)
 
 chatbot = graph.compile(checkpointer=checkpointer)
 
