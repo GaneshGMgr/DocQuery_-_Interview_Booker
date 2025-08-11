@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from pydantic import BaseModel
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 
 import redis
 import json
@@ -11,6 +11,10 @@ import traceback
 from dotenv import load_dotenv
 
 from backend.workflow_pipeline import GraphBuilder
+from langgraph.checkpoint.redis import RedisSaver
+from langgraph.store.redis import RedisStore
+from fastapi.responses import StreamingResponse
+import asyncio
 
 load_dotenv()
 
@@ -28,46 +32,24 @@ class QueryRequest(BaseModel):
     question: str
     thread_id: str
 
-class RedisSaver:
-    def __init__(self, redis_url="redis://localhost:6379/0"):
-        self.client = redis.from_url(redis_url)
 
-    def save_checkpoint(self, checkpoint_id, checkpoint_data):
-        self.client.hset("checkpoints", checkpoint_id, json.dumps(checkpoint_data))
+# Initialize Redis persistence and store
+REDIS_URI = "redis://localhost:6379"
+checkpointer = RedisSaver.from_conn_string(REDIS_URI)  # For chat history
+file_store = RedisStore.from_conn_string(REDIS_URI)    # For file metadata
+# Compile graph
+builder = GraphBuilder(streaming=True)
+chatbot = builder(checkpointer=checkpointer, store=file_store)
 
-    def list(self, _):
-        keys = self.client.hkeys("checkpoints")
-        checkpoints = []
-        for key in keys:
-            data = self.client.hget("checkpoints", key)
-            if data:
-                try:
-                    checkpoints.append(json.loads(data))
-                except json.JSONDecodeError:
-                    continue
-        return checkpoints
+print(f"Checkpointer type: {type(checkpointer)}")
+print(f"Checkpointer client: {checkpointer.client}")
 
-    def get_checkpoint(self, checkpoint_id):
-        data = self.client.hget("checkpoints", checkpoint_id)
-        if data:
-            return json.loads(data)
-        return None
-
-# Instantiate RedisSaver
-checkpointer = RedisSaver(redis_url="redis://localhost:6379/0")
-
-builder = GraphBuilder()
-chatbot = builder(checkpointer=checkpointer)
-
-@app.post("/query")
-async def query_chatbot(query: QueryRequest):
+@app.post("/query_stream")
+async def query_chatbot_stream(query: QueryRequest):
     try:
-        print("User query:", query.question)
-        print("Thread ID:", query.thread_id)
-
-        messages = {"messages": [HumanMessage(content=query.question)]}
-
-        # Optional: save graph image
+        llm = builder.model_loader.llm # Get the LLM instance directly from the builder
+        messages = [SystemMessage(content=builder.system_prompt), 
+                   HumanMessage(content=query.question)]
         try:
             png_graph = chatbot.get_graph().draw_mermaid_png()
             os.makedirs("./data/media", exist_ok=True)
@@ -77,13 +59,20 @@ async def query_chatbot(query: QueryRequest):
         except Exception as e:
             print("Failed to save graph image:", e)
 
-        output = chatbot.invoke(messages, config={'configurable': {'thread_id': query.thread_id}})
+        # Then stream the response
+        async def event_generator():
+            # Stream directly from the LLM
+            async for chunk in llm.astream(messages):
+                if hasattr(chunk, 'content'):
+                    yield f"data: {chunk.content}\n\n"
+                    await asyncio.sleep(0.01)
 
-        return {"response": output}
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
 
     except Exception as e:
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 @app.get("/threads")
 async def get_threads():
@@ -103,3 +92,6 @@ async def get_conversation(thread_id: str):
     except Exception as e:
         traceback.print_exc()
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# python -m uvicorn main:app --reload
