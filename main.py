@@ -77,24 +77,25 @@ def serialize_message(msg) -> dict:
 # API Endpoints
 @app.post("/init_thread")
 async def init_thread(request: ThreadRequest):
-    """Initialize a new chat thread"""
     try:
         initial_state = {
-            "messages": [SystemMessage(content=chatbot.builder.system_prompt)],
+            "messages": [SystemMessage(content=chatbot['builder'].system_prompt)],
             "metadata": {
                 "created_at": datetime.now().timestamp(),
                 "updated_at": datetime.now().timestamp(),
-                "title": "New Chat"
+                "title": "New Chat"  # Default title
             }
         }
         
-        chatbot.update_state(
+        # Save to Redis
+        chatbot['graph'].update_state(
             config={'configurable': {'thread_id': request.thread_id}},
             values=initial_state
         )
         return {"status": "success", "thread_id": request.thread_id}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
 
 @app.get("/threads")
 async def get_threads():
@@ -118,7 +119,7 @@ async def get_threads():
             threads.append({
                 'id': str(thread_id),
                 'title': str(state.values.get('metadata', {}).get('title', "New Chat")),
-                'timestamp': float(state.values.get('metadata', {}).get('created_at', datetime.now().timestamp())),
+                'timestamp': float(state.values.get('metadata', {}).get('updated_at', datetime.now().timestamp())), 
                 'message_count': len([m for m in state.values.get('messages', []) 
                                    if not isinstance(m, SystemMessage)])
             })
@@ -131,7 +132,7 @@ async def get_threads():
 async def get_full_thread(thread_id: str):
     """Get complete conversation history"""
     try:
-        state = chatbot.get_state(
+        state = chatbot['graph'].get_state(
             config={'configurable': {'thread_id': thread_id}}
         )
         messages = [
@@ -177,7 +178,9 @@ async def query_chatbot_stream(query: QueryRequest):
         
         async def event_generator():
             full_response = ""
-            # Access LLM through the builder we stored
+            message_placeholder = None  # For frontend rendering
+            
+            # Stream response token by token
             async for chunk in chatbot['builder'].model_loader.llm.astream(
                 [SystemMessage(content=chatbot['builder'].system_prompt)] +
                 [msg for msg in messages if not isinstance(msg, SystemMessage)] +
@@ -186,15 +189,17 @@ async def query_chatbot_stream(query: QueryRequest):
                 if hasattr(chunk, 'content'):
                     content = chunk.content
                     full_response += content
-                    yield f"data: {content}\n\n"
-                    await asyncio.sleep(0.01)
+                    yield f"data: {json.dumps({'token': content})}\n\n"  # Send as JSON
+                    await asyncio.sleep(0.01)  # Small delay to avoid flooding
             
+            # After streaming completes, save the full response
             if full_response:
                 assistant_msg = AIMessage(
                     content=full_response,
                     timestamp=datetime.now().timestamp()
                 )
                 
+                # Update thread title if first message
                 if len([m for m in messages if not isinstance(m, SystemMessage)]) == 0:
                     metadata['title'] = generate_thread_title([user_msg])
                 
@@ -208,27 +213,30 @@ async def query_chatbot_stream(query: QueryRequest):
                     }
                 )
         
-        return StreamingResponse(event_generator(), media_type="text/event-stream")
+        return StreamingResponse(
+            event_generator(),
+            media_type="text/event-stream"
+        )
     
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
     
-
+    
 @app.put("/thread_title")
 async def update_thread_title(request: ThreadRequest):
     """Update thread title"""
     try:
-        state = chatbot.get_state(
+        state = chatbot['graph'].get_state(
             config={'configurable': {'thread_id': request.thread_id}}
         )
         metadata = state.values.get('metadata', {})
         metadata.update({
             'title': request.title or metadata.get('title', "New Chat"),
-            'updated_at': datetime.now().timestamp()
+            'updated_at': datetime.now().timestamp() 
         })
         
-        chatbot.update_state(
+        chatbot['graph'].update_state(
             config={'configurable': {'thread_id': request.thread_id}},
             values={'metadata': metadata}
         )

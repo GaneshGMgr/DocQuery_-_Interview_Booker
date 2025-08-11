@@ -2,6 +2,7 @@ import streamlit as st
 import requests
 import uuid
 from datetime import datetime
+import json
 
 # Initialize session state
 def init_session_state():
@@ -54,22 +55,28 @@ def get_thread_messages(thread_id):
         return []
 
 def send_chat_message(thread_id, message):
-    """Send message and stream response"""
+    """Send message and stream response incrementally"""
     try:
-        with requests.post(
+        response = requests.post(
             f"{API_BASE_URL}/query_stream",
             json={"question": message, "thread_id": thread_id},
             stream=True
-        ) as response:
-            response.raise_for_status()
-            
-            full_response = ""
+        )
+        response.raise_for_status()
+        
+        def generate():
             for line in response.iter_lines():
                 if line:
                     decoded_line = line.decode('utf-8')
                     if decoded_line.startswith('data: '):
-                        full_response += decoded_line[6:]
-            return full_response
+                        try:
+                            data = json.loads(decoded_line[6:])
+                            yield data.get('token', '')
+                        except json.JSONDecodeError:
+                            continue
+        
+        return generate()  # Returns a generator for streaming
+    
     except Exception as e:
         st.error(f"Error during chat: {str(e)}")
         return None
@@ -150,6 +157,12 @@ st.markdown("""
 with st.sidebar:
     st.title("Chat Threads")
     
+    # Book Appointment Button (New)
+    if st.button("📅 Book Appointment", use_container_width=True, key="book_appointment"):
+        # Add your appointment booking logic here
+        st.success("Appointment booking feature will go here!") 
+    st.title("Chat Threads")
+    
     # New Chat button
     if st.button("+ New Chat", use_container_width=True):
         new_thread = create_new_thread()
@@ -218,11 +231,11 @@ if prompt := st.chat_input("Type your message..."):
         st.markdown(prompt)
         st.caption(datetime.now().strftime('%Y-%m-%d %H:%M'))
     
-    # Get and display assistant response
+    # Display assistant response (streaming)
     with st.chat_message('assistant'):
-        response = send_chat_message(st.session_state.current_thread['id'], prompt)
-        if response:
-            st.markdown(response)
+        response_stream = send_chat_message(st.session_state.current_thread['id'], prompt)
+        if response_stream:
+            response = st.write_stream(response_stream)  # Streams tokens in real-time
             st.caption(datetime.now().strftime('%Y-%m-%d %H:%M'))
     
     # Update thread title if first message
@@ -231,5 +244,9 @@ if prompt := st.chat_input("Type your message..."):
     
     # Refresh data
     st.session_state.current_thread['messages'] = get_thread_messages(st.session_state.current_thread['id'])
-    st.session_state.thread_list = get_all_threads()
+    st.session_state.thread_list = sorted(
+        get_all_threads(),
+        key=lambda x: x.get('timestamp', 0),  # Fallback to 0 if no timestamp
+        reverse=True  # Newest first
+    )
     st.rerun()
