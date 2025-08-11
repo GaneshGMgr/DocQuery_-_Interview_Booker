@@ -1,359 +1,235 @@
 import streamlit as st
-from langchain_core.messages import HumanMessage
-import uuid
 import requests
-from PIL import Image
+import uuid
+from datetime import datetime
 
-# --------------- Utility Functions -------------------
+# Initialize session state
+def init_session_state():
+    if 'current_thread' not in st.session_state:
+        st.session_state.current_thread = {
+            'id': str(uuid.uuid4()),
+            'title': "New Chat",
+            'messages': []
+        }
+    
+    if 'thread_list' not in st.session_state:
+        st.session_state.thread_list = []
+    
+    if 'show_interview_form' not in st.session_state:
+        st.session_state.show_interview_form = False
 
-def retrieve_all_threads():
+# API configuration
+API_BASE_URL = "http://localhost:8000"
+
+def get_all_threads():
+    """Fetch all conversation threads from backend"""
     try:
-        response = requests.get("http://localhost:8000/threads")
+        response = requests.get(f"{API_BASE_URL}/threads")
         response.raise_for_status()
         return response.json().get("threads", [])
     except Exception as e:
-        st.error(f"Error retrieving threads: {e}")
+        st.error(f"Failed to load threads: {str(e)}")
         return []
 
-def generate_thread_id():
-    return str(uuid.uuid4())
-
-def reset_chat():
-    thread_id = generate_thread_id()
-    st.session_state['thread_id'] = thread_id
-    add_thread(thread_id)
-    st.session_state['message_history'] = []
-
-def add_thread(thread_id):
-    if thread_id not in st.session_state['chat_threads']:
-        st.session_state['chat_threads'].append(thread_id)
-
-def load_conversation(thread_id):
+def get_thread_messages(thread_id):
+    """Get full conversation history for a thread"""
     try:
-        response = requests.get(f"http://localhost:8000/conversation/{thread_id}")
+        response = requests.get(f"{API_BASE_URL}/conversation/{thread_id}")
         response.raise_for_status()
-        return response.json().get("messages", [])
+        messages = response.json().get("messages", [])
+        
+        # Convert message format if needed
+        formatted_messages = []
+        for msg in messages:
+            formatted_msg = {
+                'role': msg['role'],
+                'content': msg['content'],
+                'timestamp': msg.get('timestamp', datetime.now().timestamp())
+            }
+            formatted_messages.append(formatted_msg)
+            
+        return formatted_messages
     except Exception as e:
-        st.error(f"Failed to load conversation: {e}")
+        st.error(f"Failed to load messages: {str(e)}")
         return []
 
-# --------------- Session Setup -------------------
+def send_chat_message(thread_id, message):
+    """Send message and stream response"""
+    try:
+        with requests.post(
+            f"{API_BASE_URL}/query_stream",
+            json={"question": message, "thread_id": thread_id},
+            stream=True
+        ) as response:
+            response.raise_for_status()
+            
+            full_response = ""
+            for line in response.iter_lines():
+                if line:
+                    decoded_line = line.decode('utf-8')
+                    if decoded_line.startswith('data: '):
+                        full_response += decoded_line[6:]
+            return full_response
+    except Exception as e:
+        st.error(f"Error during chat: {str(e)}")
+        return None
 
-if 'message_history' not in st.session_state:
-    st.session_state['message_history'] = []
+def create_new_thread():
+    """Initialize a new conversation thread"""
+    try:
+        thread_id = str(uuid.uuid4())
+        response = requests.post(
+            f"{API_BASE_URL}/init_thread",
+            json={"thread_id": thread_id}
+        )
+        response.raise_for_status()
+        return {
+            'id': thread_id,
+            'title': "New Chat",
+            'messages': []
+        }
+    except Exception as e:
+        st.error(f"Failed to create thread: {str(e)}")
+        return None
 
-if 'thread_id' not in st.session_state:
-    st.session_state['thread_id'] = generate_thread_id()
+def update_thread_title(thread_id, title):
+    """Update thread title in backend"""
+    try:
+        response = requests.put(
+            f"{API_BASE_URL}/thread_title",
+            json={"thread_id": thread_id, "title": title}
+        )
+        response.raise_for_status()
+        return True
+    except Exception as e:
+        st.error(f"Failed to update title: {str(e)}")
+        return False
 
-if 'chat_threads' not in st.session_state:
-    st.session_state['chat_threads'] = retrieve_all_threads()
+# Initialize session
+init_session_state()
 
-if "show_interview_form" not in st.session_state:
-    st.session_state.show_interview_form = False
+# Load initial data if needed
+if not st.session_state.thread_list:
+    st.session_state.thread_list = get_all_threads()
 
-add_thread(st.session_state['thread_id'])
+if not st.session_state.current_thread['messages']:
+    st.session_state.current_thread['messages'] = get_thread_messages(
+        st.session_state.current_thread['id']
+    )
 
-# --------------- Dark Theme CSS -------------------
-
+# Dark Theme CSS
 st.markdown("""
 <style>
-    /* Dark theme base colors */
     :root {
         --dark-bg: #1a1a1a;
         --darker-bg: #121212;
         --dark-text: #e0e0e0;
         --dark-border: #333333;
         --dark-accent: #4a6fa5;
-        --dark-hover: #3a5a8f;
-        --dark-secondary: #2d3748;
     }
-    
-    /* Main app background */
     .stApp {
         background-color: var(--dark-bg);
         color: var(--dark-text);
     }
-    
-    /* Sidebar styling */
     [data-testid="stSidebar"] {
         background-color: var(--darker-bg) !important;
-        border-right: 1px solid var(--dark-border);
-        padding: 1rem;
     }
-    
-    /* Sidebar section headers */
-    .sidebar-section {
-        margin-top: 1rem;
-        margin-bottom: 0.5rem;
-        font-weight: 600;
-        font-size: 0.85rem;
-        color: var(--dark-text);
-        letter-spacing: 0.5px;
-        text-transform: uppercase;
-    }
-    
-    /* Thread selection dropdown */
-    .stSelectbox>div>div>div>div>div {
-        background-color: var(--darker-bg);
-        border: 1px solid var(--dark-border);
-        color: var(--dark-text);
-        border-radius: 6px;
-        padding: 0.4rem;
-    }
-    
-    /* File uploader styling */
-    .file-uploader {
-        border: 2px dashed var(--dark-border);
-        border-radius: 8px;
-        padding: 1.25rem;
-        text-align: center;
-        background-color: var(--darker-bg);
-        transition: all 0.2s;
-        margin-bottom: 0.5rem;
-    }
-    
-    .file-uploader:hover {
-        border-color: var(--dark-accent);
-        background-color: rgba(74, 111, 165, 0.1);
-    }
-    
-    .uploader-text {
-        font-size: 0.75rem;
-        color: #a0a0a0;
-        margin: 0.25rem 0;
-        line-height: 1.4;
-    }
-    
-    /* Button styling */
-    .sidebar-button {
-        border-radius: 6px;
-        padding: 0.5rem;
-        font-weight: 500;
-        border: none;
-        transition: all 0.2s;
-        width: 100%;
-        margin: 0.25rem 0;
-        font-size: 0.85rem;
-    }
-    
-    .primary-button {
-        background-color: var(--dark-accent);
-        color: white;
-    }
-    
-    .primary-button:hover {
-        background-color: var(--dark-hover);
-    }
-    
-    .secondary-button {
-        background-color: var(--dark-secondary);
-        color: var(--dark-text);
-    }
-    
-    .secondary-button:hover {
-        background-color: #3a4a5f;
-    }
-    
-    /* Modal form styling */
-    .modal-overlay {
-        position: fixed;
-        top: 0; left: 0;
-        width: 100vw; height: 100vh;
-        background-color: rgba(0,0,0,0.7);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 9999;
-    }
-    
-    .modal-content {
-        background: var(--darker-bg);
-        padding: 1.5rem;
+    .stChatMessage {
         border-radius: 10px;
-        width: 380px;
-        border: 1px solid var(--dark-border);
-        box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+        padding: 12px;
+        margin-bottom: 12px;
     }
-    
-    .modal-title {
-        font-size: 1.1rem;
-        font-weight: 600;
-        margin-bottom: 1.25rem;
+    .stTextInput input {
+        background-color: var(--darker-bg);
         color: var(--dark-text);
-    }
-    
-    /* Form input styling */
-    .form-input {
-        margin-bottom: 1rem;
-    }
-    
-    .form-input label {
-        font-size: 0.85rem;
-        margin-bottom: 0.25rem;
-        display: block;
-        color: var(--dark-text);
-    }
-    
-    /* Divider */
-    .divider {
-        border-top: 1px solid var(--dark-border);
-        margin: 1rem 0;
-    }
-    
-    /* Chat message styling */
-    .chat-message {
-        border-radius: 10px;
-        padding: 0.75rem 1rem;
-        margin-bottom: 0.75rem;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-    }
-    
-    .user-message {
-        background-color: rgba(74, 111, 165, 0.2);
-        margin-left: 20%;
-        border: 1px solid rgba(74, 111, 165, 0.3);
-    }
-    
-    .assistant-message {
-        background-color: rgba(45, 55, 72, 0.3);
-        margin-right: 20%;
-        border: 1px solid var(--dark-border);
     }
 </style>
 """, unsafe_allow_html=True)
 
-# --------------- Sidebar UI -------------------
-
+# Sidebar UI
 with st.sidebar:
+    st.title("Chat Threads")
+    
     # New Chat button
-    if st.button('+ New Chat', key='new_chat', use_container_width=True, 
-                help="Start a new conversation"):
-        reset_chat()
+    if st.button("+ New Chat", use_container_width=True):
+        new_thread = create_new_thread()
+        if new_thread:
+            st.session_state.current_thread = new_thread
+            st.session_state.thread_list = get_all_threads()
+            st.rerun()
     
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
+    st.divider()
+    st.subheader("Your Conversations")
     
-    # Conversations section
-    st.markdown('<div class="sidebar-section">My Conversations</div>', unsafe_allow_html=True)
+    # Thread list
+    for thread in st.session_state.thread_list:
+        title = str(thread.get('title', 'New Chat'))  # Ensure it's a string
+        if st.button(
+            title,
+            key=f"thread_{thread['id']}",
+            use_container_width=True,
+            help=f"Last updated: {datetime.fromtimestamp(thread['timestamp']).strftime('%Y-%m-%d %H:%M') if thread.get('timestamp') else 'N/A'}"
+        ):
+            st.session_state.current_thread = {
+                'id': thread['id'],
+                'title': title,
+                'messages': get_thread_messages(thread['id'])
+            }
+            st.rerun()
     
-    selected_thread = st.selectbox(
-        "Select Thread",
-        options=st.session_state['chat_threads'][::-1],
-        index=0,
-        label_visibility="collapsed",
-        format_func=lambda x: f"{x[:8]}..." if len(x) > 8 else x,
-        help="Select a previous conversation"
-    )
-    
-    if selected_thread != st.session_state['thread_id']:
-        st.session_state['thread_id'] = selected_thread
-        messages = load_conversation(selected_thread)
-        st.session_state['message_history'] = messages
-    
-    st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-    
-    # Actions section
-    st.markdown('<div class="sidebar-section">Actions</div>', unsafe_allow_html=True)
+    st.divider()
     
     # File uploader
-    st.markdown('<div class="file-uploader">Upload Document</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="uploader-text">Drag and drop file here<br>Limit 200MB per file • PDF, DOCX, DOC, TXT</div>',
-        unsafe_allow_html=True
-    )
-    
     uploaded_file = st.file_uploader(
         "Upload Document",
-        type=["pdf", "docx", "doc", "txt"],
-        label_visibility="collapsed",
-        key="file_uploader"
+        type=["pdf", "docx", "txt"],
+        label_visibility="collapsed"
     )
     
-    if uploaded_file is not None:
-        st.session_state['message_history'].append({
+    if uploaded_file:
+        st.session_state.current_thread['messages'].append({
             'role': 'user',
-            'content': f"Uploaded file: {uploaded_file.name}"
+            'content': f"Uploaded file: {uploaded_file.name}",
+            'timestamp': datetime.now().timestamp()
         })
-        with open(uploaded_file.name, "wb") as f:
-            f.write(uploaded_file.getbuffer())
+
+# Main chat interface
+st.title(st.session_state.current_thread.get('title', 'New Chat'))
+
+# Display messages
+for msg in st.session_state.current_thread['messages']:
+    with st.chat_message(msg['role'], avatar="🧑" if msg['role'] == 'user' else "🤖"):
+        st.markdown(msg['content'])
+        if msg.get('timestamp'):
+            st.caption(datetime.fromtimestamp(msg['timestamp']).strftime('%Y-%m-%d %H:%M'))
+
+# Message input
+if prompt := st.chat_input("Type your message..."):
+    # Add user message
+    user_msg = {
+        'role': 'user',
+        'content': prompt,
+        'timestamp': datetime.now().timestamp()
+    }
+    st.session_state.current_thread['messages'].append(user_msg)
     
-    # Interview form button
-    if st.button("Check the latest form", 
-                key='open_form', 
-                use_container_width=True,
-                help="Open interview appointment form"):
-        st.session_state.show_interview_form = True
-
-# --------------- Interview Form Modal -------------------
-
-if st.session_state.show_interview_form:    
-    with st.form("interview_form", clear_on_submit=True):
-        st.markdown('<div class="form-input">', unsafe_allow_html=True)
-        name = st.text_input("Name: ", key="name_input")
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        st.markdown('<div class="form-input">', unsafe_allow_html=True)
-        email = st.text_input("Email: ", key="email_input")
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        st.markdown('<div class="form-input">', unsafe_allow_html=True)
-        date = st.date_input("Date: ", key="date_input")
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        st.markdown('<div class="form-input">', unsafe_allow_html=True)
-        time = st.time_input("Time: ", key="time_input")
-        st.markdown('</div>', unsafe_allow_html=True)
-        
-        st.markdown('<div class="divider"></div>', unsafe_allow_html=True)
-        
-        col1, col2 = st.columns([1, 1])
-        with col1:
-            if st.form_submit_button("Submit", type="primary"):
-                form_data = f"Name: {name}\nEmail: {email}\nDate: {date}\nTime: {time}"
-                st.session_state['message_history'].append({'role': 'user', 'content': form_data})
-                st.session_state.show_interview_form = False
-                st.rerun()
-        with col2:
-            if st.form_submit_button("Cancel"):
-                st.session_state.show_interview_form = False
-                st.rerun()
-
-# --------------- Main Chat UI -------------------
-
-for message in st.session_state['message_history']:
-    with st.chat_message(message['role'], 
-                        avatar="🧑" if message['role'] == 'user' else "🤖"):
-        st.markdown(message['content'])
-
-# --------------- Chat Input -------------------
-
-user_input = st.chat_input('Type your message here...')
-
-if user_input:
-    st.session_state['message_history'].append({'role': 'user', 'content': user_input})
+    # Display user message
     with st.chat_message('user'):
-        st.markdown(user_input)
+        st.markdown(prompt)
+        st.caption(datetime.now().strftime('%Y-%m-%d %H:%M'))
     
-    # Placeholder to update assistant message incrementally
-    assistant_message_placeholder = st.empty()
-    full_response = ""
-
-    # Streaming request
-    response = requests.post(
-        "http://localhost:8000/query_stream",
-        json={"question": user_input, "thread_id": st.session_state['thread_id']},
-        stream=True,
-    )
-
-    try:
-        for line in response.iter_lines(decode_unicode=True):
-            if line:
-                # SSE format: data: chunk
-                if line.startswith("data: "):
-                    chunk = line[6:]
-                    full_response += chunk
-                    assistant_message_placeholder.markdown(full_response)
-    except Exception as e:
-        assistant_message_placeholder.markdown(f"Error during streaming: {e}")
-
-    # Append full assistant message to history
-    st.session_state['message_history'].append({'role': 'assistant', 'content': full_response})
+    # Get and display assistant response
+    with st.chat_message('assistant'):
+        response = send_chat_message(st.session_state.current_thread['id'], prompt)
+        if response:
+            st.markdown(response)
+            st.caption(datetime.now().strftime('%Y-%m-%d %H:%M'))
+    
+    # Update thread title if first message
+    if len(st.session_state.current_thread['messages']) <= 2:
+        update_thread_title(st.session_state.current_thread['id'], prompt[:30])
+    
+    # Refresh data
+    st.session_state.current_thread['messages'] = get_thread_messages(st.session_state.current_thread['id'])
+    st.session_state.thread_list = get_all_threads()
+    st.rerun()
