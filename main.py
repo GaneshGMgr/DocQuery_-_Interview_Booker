@@ -259,3 +259,5 @@ async def get_conversation(thread_id: str):
         return {"messages": messages}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+# python -m uvicorn main:app --reload
